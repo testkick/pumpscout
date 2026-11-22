@@ -26,13 +26,19 @@ async def scheduler():
             feed = get_feed(cfg)
             now = time.time()
 
-            # WALLET DISCOVERY: seed on first run if empty, then refresh daily
+            # WALLET DISCOVERY: seed on first run if empty, then refresh daily.
+            # Back off on failure — if the list is still empty, retry at most
+            # every 15 min (not every loop), so a bad key can't cause a retry storm.
             with store.db() as conn:
                 wn = conn.execute("SELECT COUNT(*) n FROM watch_wallets").fetchone()["n"]
-            need_discover = (wn == 0) or (now - _STATE.get("last_discover", 0) >= 86400)
+            since_last = now - _STATE.get("last_discover", 0)
+            need_discover = (wn == 0 and since_last >= 900) or \
+                            (wn > 0 and since_last >= 86400) or \
+                            _STATE.get("last_discover", 0) == 0
             if need_discover and os.environ.get("SOLANATRACKER_API_KEY"):
                 _STATE["last_discover"] = now
-                await asyncio.to_thread(pipeline.discover_wallets, feed, cfg)
+                got = await asyncio.to_thread(pipeline.discover_wallets, feed, cfg)
+                _STATE["last_discover_result"] = got
 
             # PUMP SCOUT + evaluate, every scout_interval_secs
             if now - _STATE["last_scout"] >= cfg["scout_interval_secs"]:
