@@ -26,6 +26,14 @@ async def scheduler():
             feed = get_feed(cfg)
             now = time.time()
 
+            # WALLET DISCOVERY: seed on first run if empty, then refresh daily
+            with store.db() as conn:
+                wn = conn.execute("SELECT COUNT(*) n FROM watch_wallets").fetchone()["n"]
+            need_discover = (wn == 0) or (now - _STATE.get("last_discover", 0) >= 86400)
+            if need_discover and os.environ.get("SOLANATRACKER_API_KEY"):
+                _STATE["last_discover"] = now
+                await asyncio.to_thread(pipeline.discover_wallets, feed, cfg)
+
             # PUMP SCOUT + evaluate, every scout_interval_secs
             if now - _STATE["last_scout"] >= cfg["scout_interval_secs"]:
                 _STATE["last_scout"] = now
@@ -187,6 +195,14 @@ async def api_import_wallets(request: Request):
             conn.execute("INSERT OR REPLACE INTO watch_wallets (address,label,kind,added) VALUES (?,?,?,?)",
                          (w["address"].strip(), w.get("label",""), w.get("kind","whale"), time.time()))
     return {"ok": True, "count": len(rows)}
+
+@app.post("/api/wallets/discover")
+async def api_discover(request: Request):
+    require(request)
+    cfg = store.get_settings()
+    feed = get_feed(cfg)
+    n = await asyncio.to_thread(pipeline.discover_wallets, feed, cfg)
+    return {"ok": True, "discovered": n, "error": feed.last_error}
 
 @app.get("/api/wallets")
 def api_wallets(request: Request):

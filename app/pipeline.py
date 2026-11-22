@@ -15,6 +15,30 @@ from . import store
 from .adapters import get_feed
 
 
+# ── WALLET DISCOVERY (auto-populate the 210) ──────────────────────────────
+def discover_wallets(feed, cfg: dict) -> int:
+    """Pull top-PnL wallets from SolanaTracker into watch_wallets. Only ADDS /
+    refreshes discovered ('smart') wallets; never removes manually-added ones."""
+    want = int(cfg.get("watch_wallet_target", 210))
+    found = feed.discover_top_wallets(
+        limit=want,
+        min_win_rate=cfg.get("discover_min_win_rate", 0.55),
+        min_trades=cfg.get("discover_min_trades", 20),
+        days=cfg.get("discover_days", 30))
+    if not found:
+        store.scribe("Discover", "error", feed.last_error or "no wallets returned")
+        return 0
+    added = 0
+    with store.db() as conn:
+        for w in found:
+            conn.execute("""INSERT INTO watch_wallets (address,label,kind,added)
+                VALUES (?,?,?,?) ON CONFLICT(address) DO UPDATE SET label=excluded.label""",
+                (w["address"], w.get("label",""), w.get("kind","smart"), time.time()))
+            added += 1
+    store.scribe("Discover", "act", f"watch list refreshed: {added} top-PnL wallets")
+    return added
+
+
 # ── 1. PUMP SCOUT ─────────────────────────────────────────────────────────
 def pump_scout(feed, since_ts: float) -> list:
     toks = feed.new_tokens(since_ts)

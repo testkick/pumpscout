@@ -200,22 +200,82 @@ class HeliusFeed(Feed):
             }
         return {"price": 0.0, "liquidity": 0.0, "mcap": 0.0}
 
+    # ── WALLET DISCOVERY (SolanaTracker PnL leaderboard) ─────────────────
+    def discover_top_wallets(self, limit: int = 210, min_win_rate: float = 0.55,
+                             min_trades: int = 20, days: int = 30) -> list[dict]:
+        """Top-PnL Solana wallets to seed the watch list. /v2/pnl/leaderboard/top
+        ranks wallets with rich filters; we pull winners and tag them 'smart'.
+        Returns [{address,label,kind,pnl,win_rate,trades}]."""
+        out, cursor, pages = [], None, 0
+        while len(out) < limit and pages < 6:
+            params = {"sort": "realized", "direction": "desc", "days": days,
+                      "minTrades": min_trades, "minWinRate": min_win_rate,
+                      "excludeArbitrage": "true", "limit": 100}
+            if cursor:
+                params = {"cursor": cursor}
+            data = self._st("/v2/pnl/leaderboard/top", **params)
+            if not isinstance(data, dict):
+                break
+            for t in data.get("traders") or []:
+                addr = t.get("wallet")
+                if not addr:
+                    continue
+                pnl = ((t.get("ending") or {}).get("pnl") or {}).get("total") or 0
+                out.append({
+                    "address": addr,
+                    "label": (t.get("identity") or {}).get("name") or addr[:8],
+                    "kind": "smart",
+                    "pnl": float(pnl),
+                    "win_rate": float(t.get("winRate") or 0),
+                    "trades": int((t.get("counts") or {}).get("trades") or 0),
+                })
+                if len(out) >= limit:
+                    break
+            cursor = (data.get("pagination") or {}).get("nextCursor")
+            pages += 1
+            if not cursor:
+                break
+        return out
+
     # ── WHALE / KOL WATCH ────────────────────────────────────────────────
     def wallet_buys(self, wallets: list[str], since_ts: float) -> list[dict]:
-        """Recent BUY actions by watched wallets. Uses Helius parsed-txn history
-        per wallet, filtering to SWAP buys after since_ts."""
+        """Recent BUY actions by watched wallets. Primary: SolanaTracker
+        /wallet/{owner}/trades (one call per wallet, no RPC rate limit). Falls
+        back to throttled Helius RPC tx history only if ST is unavailable."""
         out = []
         for w in wallets:
-            txns = self._rpc_tx_history(w, limit=25)
-            for tx in txns:
+            data = self._st(f"/wallet/{w}/trades")
+            trades = None
+            if isinstance(data, dict):
+                trades = data.get("trades") or data.get("data")
+            elif isinstance(data, list):
+                trades = data
+            if trades is not None:
+                for t in trades:
+                    # a buy = type/side 'buy', or the 'to' token is non-SOL
+                    side = (t.get("type") or t.get("side") or "").lower()
+                    ts = t.get("time") or t.get("timestamp") or 0
+                    ts = float(ts)/1000 if ts > 1e12 else float(ts or 0)
+                    if ts and ts < since_ts:
+                        continue
+                    mint = (t.get("mint") or t.get("token")
+                            or (t.get("to") or {}).get("token", {}).get("address")
+                            or (t.get("to") or {}).get("address"))
+                    if side and side != "buy":
+                        continue
+                    if mint:
+                        out.append({"wallet": w, "mint": mint,
+                                    "usd": float(t.get("volume") or t.get("volumeUsd") or 0),
+                                    "ts": ts})
+                continue
+            # fallback: throttled Helius RPC (budget-capped)
+            for tx in self._rpc_tx_history(w, limit=8):
                 ts = tx.get("timestamp", 0)
                 if ts < since_ts:
                     continue
-                # a "buy" = wallet received a non-SOL token in the swap
                 for tt in tx.get("tokenTransfers", []):
                     if tt.get("toUserAccount") == w and tt.get("mint"):
-                        out.append({"wallet": w, "mint": tt["mint"],
-                                    "usd": 0.0, "ts": ts})
+                        out.append({"wallet": w, "mint": tt["mint"], "usd": 0.0, "ts": ts})
         return out
 
     # ── HOLDER FLOW ──────────────────────────────────────────────────────

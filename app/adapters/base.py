@@ -26,6 +26,12 @@ class Feed:
     def __init__(self):
         self.last_error: str | None = None
 
+    # WALLET DISCOVERY — auto-populate the watch list with top-PnL wallets
+    def discover_top_wallets(self, limit: int = 210, min_win_rate: float = 0.55,
+                             min_trades: int = 20, days: int = 30) -> list[dict]:
+        """-> [{address,label,kind,pnl,win_rate,trades}]."""
+        return []
+
     # PUMP SCOUT
     def new_tokens(self, since_ts: float, limit: int = 100) -> list[NewToken]:
         raise NotImplementedError

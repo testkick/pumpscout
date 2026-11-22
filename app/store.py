@@ -110,6 +110,11 @@ DEFAULT_SETTINGS = {
     "trail_pct": 0.25,                 # 25% trailing stop from peak
     # data provider (bound once you name your key)
     "data_provider": "unset",          # helius | birdeye | moralis | unset
+    # WALLET DISCOVERY (auto-populate the watch list from SolanaTracker)
+    "watch_wallet_target": 210,
+    "discover_min_win_rate": 0.55,
+    "discover_min_trades": 20,
+    "discover_days": 30,
 }
 
 def get_settings() -> dict:

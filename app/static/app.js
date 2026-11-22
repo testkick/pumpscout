@@ -108,6 +108,13 @@ async function loadWallets(){
   $("wallet-list").innerHTML = `<div class="hint">${wallets.length} wallets tracked</div>`+
     wallets.map(w=>`<div class="row"><span class="m">${esc(w.kind)}</span><span>${esc(w.label||w.address.slice(0,8))}</span><span class="t">${esc(w.address.slice(0,16))}…</span></div>`).join("");
 }
+$("wallet-discover").onclick = async ()=>{
+  $("wallet-note").textContent = "discovering top-PnL wallets…";
+  try{ const r = await api("/api/wallets/discover",{method:"POST"});
+    $("wallet-note").textContent = r.discovered? `discovered ${r.discovered} wallets`:(r.error||"none found");
+    loadWallets();
+  }catch{ $("wallet-note").textContent="discover failed"; }
+};
 $("wallet-save").onclick = async ()=>{
   const rows = $("wallet-input").value.trim().split("\n").filter(Boolean).map(l=>{
     const [address,label,kind]=l.split(",").map(x=>x&&x.trim());
