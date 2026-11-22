@@ -75,15 +75,41 @@ def bounce_finder(feed, mint: str) -> int:
     return 0
 
 
-# ── 3+4. WHALE WATCH + KOL WATCH ──────────────────────────────────────────
+# ── WHALE-BUY INDEX (bulk refresh — credit-efficient) ─────────────────────
+def refresh_whale_index(feed, cfg: dict) -> int:
+    """Pull each watched wallet's recent trades ONCE and cache which mints they
+    bought. Candidate scoring then reads this cache with zero per-token calls.
+    This is the key Free-tier optimization: ~60 calls / 30 min instead of
+    210 calls × every candidate."""
+    wallets = store_watch_wallets()
+    if not wallets:
+        return 0
+    since = time.time() - 3600          # keep a 1h window of buys
+    kind_by_addr = {w["address"]: w["kind"] for w in wallets}
+    addrs = [w["address"] for w in wallets]
+    buys = feed.wallet_buys(addrs, since) # ST-native: 1 call per wallet
+    with store.db() as conn:
+        conn.execute("DELETE FROM whale_buys_index WHERE ts < ?", (since,))
+        for b in buys:
+            conn.execute("""INSERT OR REPLACE INTO whale_buys_index
+                (mint,wallet,kind,usd,ts) VALUES (?,?,?,?,?)""",
+                (b["mint"], b["wallet"], kind_by_addr.get(b["wallet"], "smart"),
+                 b.get("usd", 0), b.get("ts", time.time())))
+    store.scribe("WhaleIndex", "info", f"indexed {len(buys)} recent whale buys across {len(addrs)} wallets")
+    if feed.last_error:
+        store.scribe("WhaleIndex", "error", feed.last_error)
+    return len(buys)
+
+
+# ── 3+4. WHALE WATCH + KOL WATCH (read the cached index — no API calls) ────
 def wallet_signals(feed, mint: str, window_secs: int = 300) -> dict:
     since = time.time() - window_secs
-    wallets = store_watch_wallets()
-    whale_set = {w["address"] for w in wallets if w["kind"] in ("whale", "fund", "smart")}
-    kol_set = {w["address"] for w in wallets if w["kind"] == "kol"}
-    buys = feed.wallet_buys(list(whale_set | kol_set), since)
-    whale_buys = sum(1 for b in buys if b["mint"] == mint and b["wallet"] in whale_set)
-    kol_buys = sum(1 for b in buys if b["mint"] == mint and b["wallet"] in kol_set)
+    with store.db() as conn:
+        rows = conn.execute(
+            "SELECT kind FROM whale_buys_index WHERE mint=? AND ts>=?",
+            (mint, since)).fetchall()
+    whale_buys = sum(1 for r in rows if r["kind"] in ("whale", "fund", "smart"))
+    kol_buys = sum(1 for r in rows if r["kind"] == "kol")
     return {"whale_buys": whale_buys, "kol_buys": kol_buys}
 
 
@@ -145,7 +171,10 @@ def evaluate_token(feed, tok, cfg: dict) -> dict:
         "whale_buys": ws["whale_buys"], "kol_buys": ws["kol_buys"],
         "new_holders": hf["new_holders"], "buy_pressure": hf["buy_pressure"],
         "rug_pass": rg["pass"], "rug_reason": rg["reason"],
-        "bundle_clusters": bundle_hunter(feed, mint),
+        # BUNDLE HUNTER is the most call-heavy module; skip it in credit_saver
+        # mode (Free tier) unless the candidate already looks strong.
+        "bundle_clusters": (0 if cfg.get("credit_saver")
+                            else bundle_hunter(feed, mint)),
     }
     score, decision, reason = score_candidate(sig, cfg)
     with store.db() as conn:

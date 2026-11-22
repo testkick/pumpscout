@@ -86,12 +86,26 @@ def init():
         CREATE INDEX IF NOT EXISTS idx_cand_ts ON candidates(ts);
         CREATE INDEX IF NOT EXISTS idx_pos_status ON positions(status);
         CREATE INDEX IF NOT EXISTS idx_scribe_ts ON scribe(ts);
+
+        -- WHALE-BUY INDEX: which mints the watched wallets bought recently.
+        -- Refreshed in bulk every whale_index_refresh_secs so candidate scoring
+        -- needs ZERO per-token wallet calls (critical for the Free credit tier).
+        CREATE TABLE IF NOT EXISTS whale_buys_index (
+            mint TEXT, wallet TEXT, kind TEXT, usd REAL, ts REAL,
+            PRIMARY KEY (mint, wallet)
+        );
+        CREATE INDEX IF NOT EXISTS idx_wbi_mint ON whale_buys_index(mint);
+        CREATE INDEX IF NOT EXISTS idx_wbi_ts ON whale_buys_index(ts);
         """)
 
 # ── settings ──────────────────────────────────────────────────────────────
 DEFAULT_SETTINGS = {
     "dry_run": True,                   # paper by default — turn off only when you mean it
-    "scout_interval_secs": 600,        # PUMP SCOUT every 10 min
+    "scout_interval_secs": 900,        # PUMP SCOUT every 15 min (Free-tier friendly)
+    "max_candidates_per_sweep": 8,     # cap ST calls per sweep (credit budget)
+    "whale_index_refresh_secs": 1800,  # refresh the whale-buy index every 30 min
+    "credit_saver": True,              # Free tier: skip the most expensive modules
+    "daily_credit_budget": 70,         # hard stop: pause sweeps once spent (Free=2.5K/mo)
     "starting_equity_usd": 1000.0,     # paper bankroll
     # SIZER
     "equity_frac_per_trade": 0.015,    # 1.5% of equity per trade (your "1-2%")
@@ -111,10 +125,11 @@ DEFAULT_SETTINGS = {
     # data provider (bound once you name your key)
     "data_provider": "unset",          # helius | birdeye | moralis | unset
     # WALLET DISCOVERY (auto-populate the watch list from SolanaTracker)
-    "watch_wallet_target": 210,
+    "watch_wallet_target": 60,   # smaller on Free tier (leaderboard paging costs credits)
     "discover_min_win_rate": 0.55,
     "discover_min_trades": 20,
     "discover_days": 30,
+    "discover_refresh_secs": 604800,   # re-discover weekly, not daily (Free tier)
 }
 
 def get_settings() -> dict:

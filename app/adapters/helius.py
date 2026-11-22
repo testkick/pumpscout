@@ -46,6 +46,7 @@ class HeliusFeed(Feed):
         self.s = requests.Session()
         self.s.headers.update({"Content-Type": "application/json"})
         self.rate_limited = False
+        self.st_calls = 0          # SolanaTracker Data API calls this session (credit meter)
         self.rpc_calls = 0
         self.RPC_CALL_BUDGET = 120        # hard cap on getTransaction calls per sweep
         self.RPC_CALL_DELAY = 0.12        # ~8 req/s, under the base-tier limit

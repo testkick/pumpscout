@@ -40,19 +40,40 @@ async def scheduler():
                 got = await asyncio.to_thread(pipeline.discover_wallets, feed, cfg)
                 _STATE["last_discover_result"] = got
 
-            # PUMP SCOUT + evaluate, every scout_interval_secs
-            if now - _STATE["last_scout"] >= cfg["scout_interval_secs"]:
+            # CREDIT GATE: Free tier is ~2.5K/month. Track calls per UTC day and
+            # pause sweeps once the daily budget is spent, so it lasts the month.
+            import datetime
+            today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+            if _STATE.get("credit_day") != today:
+                _STATE["credit_day"] = today
+                _STATE["credit_used"] = 0
+            budget = cfg.get("daily_credit_budget", 70)
+            credit_ok = _STATE.get("credit_used", 0) < budget
+
+            # PUMP SCOUT + evaluate, every scout_interval_secs (if budget remains)
+            if credit_ok and now - _STATE["last_scout"] >= cfg["scout_interval_secs"]:
                 _STATE["last_scout"] = now
                 since = now - cfg["scout_interval_secs"] * 2
+                # refresh the whale-buy index on its own cadence (bulk, cheap)
+                if now - _STATE.get("last_whale_index", 0) >= cfg.get("whale_index_refresh_secs", 1800):
+                    _STATE["last_whale_index"] = now
+                    await asyncio.to_thread(pipeline.refresh_whale_index, feed, cfg)
+
                 fresh = await asyncio.to_thread(pipeline.pump_scout, feed, since)
                 bought = 0
-                for tok in fresh[:40]:                 # cap work per sweep
+                cap = cfg.get("max_candidates_per_sweep", 8)
+                for tok in fresh[:cap]:                 # cap ST calls per sweep
                     res = await asyncio.to_thread(pipeline.evaluate_token, feed, tok, cfg)
                     if res["decision"] == "buy":
                         if await asyncio.to_thread(trade.execute_buy, res, cfg):
                             bought += 1
-                _STATE["last_scout_result"] = {"fresh": len(fresh), "bought": bought, "ts": now}
+                _STATE["credit_used"] = _STATE.get("credit_used", 0) + getattr(feed, "st_calls", 0)
+                _STATE["last_scout_result"] = {"fresh": len(fresh), "bought": bought,
+                                               "credits_today": _STATE["credit_used"], "ts": now}
                 _STATE["feed_error"] = feed.last_error
+                if _STATE["credit_used"] >= budget:
+                    store.scribe("Credit", "info",
+                        f"daily credit budget ({budget}) reached — pausing sweeps until tomorrow (UTC)")
 
             # STOP GUARD + TP LADDER + equity snapshot, every ~20s
             if now - _STATE["last_manage"] >= 20:
@@ -116,6 +137,8 @@ def healthz():
         "counts": {"tokens_seen": tokens, "candidates": cands, "open_positions": open_n,
                    "snapshots": snaps, "watch_wallets": wallets},
         "equity": round(trade.current_equity(cfg), 2),
+        "credits_used_today": _STATE.get("credit_used", 0),
+        "daily_credit_budget": cfg.get("daily_credit_budget", 70),
     }
 
 
