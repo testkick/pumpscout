@@ -11,8 +11,20 @@ import os, time, json
 import requests
 from .base import Feed, NewToken
 
-HELIUS_KEY = os.environ.get("HELIUS_API_KEY", "")
-ST_KEY = os.environ.get("SOLANATRACKER_API_KEY", "")
+def _extract_key(raw: str) -> str:
+    """Accept the Helius key as a bare UUID OR a full RPC URL
+    (https://mainnet.helius-rpc.com/?api-key=UUID). Either way, return just the
+    key so the adapter can't be misconfigured by pasting the whole URL."""
+    raw = (raw or "").strip()
+    if "api-key=" in raw:
+        return raw.split("api-key=", 1)[1].split("&")[0].strip()
+    # strip an accidental full URL with no query too
+    if raw.startswith("http"):
+        return ""  # URL without api-key= — unusable, surface as missing
+    return raw
+
+HELIUS_KEY = _extract_key(os.environ.get("HELIUS_API_KEY", ""))
+ST_KEY = (os.environ.get("SOLANATRACKER_API_KEY", "") or "").strip()
 
 HELIUS_RPC = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_KEY}"
 HELIUS_API = "https://api.helius.xyz/v0"
@@ -55,6 +67,48 @@ class HeliusFeed(Feed):
             self.last_error = f"helius api {path} error: {e}"
             return None
 
+    def _rpc_tx_history(self, address: str, limit: int = 40) -> list[dict]:
+        """Recent parsed transactions for an address via RPC only (no Enhanced
+        REST API, which is plan-gated and 401s). getSignaturesForAddress ->
+        getTransaction(jsonParsed). Returns a lightweight shape the modules use:
+        {timestamp, feePayer, tokenTransfers:[{mint,toUserAccount}]}."""
+        sigs = self._rpc("getSignaturesForAddress", [address, {"limit": limit}])
+        if not sigs:
+            return []
+        out = []
+        for s in sigs[:limit]:
+            sig = s.get("signature")
+            if not sig:
+                continue
+            tx = self._rpc("getTransaction",
+                           [sig, {"maxSupportedTransactionVersion": 0,
+                                  "encoding": "jsonParsed"}])
+            if not tx:
+                continue
+            meta = tx.get("meta") or {}
+            msg = (tx.get("transaction") or {}).get("message") or {}
+            keys = msg.get("accountKeys") or []
+            fee_payer = ""
+            for k in keys:
+                if isinstance(k, dict) and k.get("signer"):
+                    fee_payer = k.get("pubkey"); break
+                if isinstance(k, str):
+                    fee_payer = k; break
+            # token transfers from pre/post token balances
+            transfers = []
+            pre = {b.get("accountIndex"): b for b in (meta.get("preTokenBalances") or [])}
+            for pb in (meta.get("postTokenBalances") or []):
+                idx = pb.get("accountIndex")
+                mint = pb.get("mint")
+                owner = pb.get("owner")
+                pre_amt = float(((pre.get(idx) or {}).get("uiTokenAmount") or {}).get("uiAmount") or 0)
+                post_amt = float((pb.get("uiTokenAmount") or {}).get("uiAmount") or 0)
+                if mint and post_amt > pre_amt:        # received tokens = a buy leg
+                    transfers.append({"mint": mint, "toUserAccount": owner})
+            out.append({"timestamp": s.get("blockTime") or 0,
+                        "feePayer": fee_payer, "tokenTransfers": transfers})
+        return out
+
     def _st(self, path: str, **params):
         if not ST_KEY:
             return None
@@ -91,9 +145,9 @@ class HeliusFeed(Feed):
                     dev_wallet=tok.get("creator") or tok.get("deployer") or "",
                     launch_ts=created or time.time(), raw=t))
             return out
-        # fallback: Helius parsed pump.fun program transactions
-        txns = self._helius_api(f"/addresses/{PUMPFUN_PROGRAM}/transactions",
-                                type="CREATE") or []
+        # fallback: recent pump.fun program txns via RPC (SolanaTracker is the
+        # primary new-tokens source; this only runs if ST is unavailable).
+        txns = self._rpc_tx_history(PUMPFUN_PROGRAM, limit=limit)
         for tx in txns[:limit]:
             mint = ""
             for tt in tx.get("tokenTransfers", []):
@@ -131,7 +185,7 @@ class HeliusFeed(Feed):
         per wallet, filtering to SWAP buys after since_ts."""
         out = []
         for w in wallets:
-            txns = self._helius_api(f"/addresses/{w}/transactions", type="SWAP") or []
+            txns = self._rpc_tx_history(w, limit=25)
             for tx in txns:
                 ts = tx.get("timestamp", 0)
                 if ts < since_ts:
@@ -193,7 +247,7 @@ class HeliusFeed(Feed):
         """Detect coordinated-buy clusters near launch. Heuristic: among the
         earliest buyers, group by common funder wallet; each group >1 that was
         funded by the same source in the same window is a 'bundle cluster'."""
-        txns = self._helius_api(f"/addresses/{mint}/transactions", type="SWAP") or []
+        txns = self._rpc_tx_history(mint, limit=60)
         # earliest ~60 buys
         buys = []
         for tx in sorted(txns, key=lambda t: t.get("timestamp", 0))[:60]:
