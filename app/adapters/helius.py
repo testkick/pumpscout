@@ -41,19 +41,33 @@ class HeliusFeed(Feed):
         super().__init__()
         self.s = requests.Session()
         self.s.headers.update({"Content-Type": "application/json"})
+        self.rate_limited = False
+        self.rpc_calls = 0
+        self.RPC_CALL_BUDGET = 120        # hard cap on getTransaction calls per sweep
+        self.RPC_CALL_DELAY = 0.12        # ~8 req/s, under the base-tier limit
 
     # ── low-level helpers ────────────────────────────────────────────────
     def _rpc(self, method: str, params: list):
-        try:
-            r = self.s.post(HELIUS_RPC, json={"jsonrpc": "2.0", "id": "1",
-                            "method": method, "params": params}, timeout=12)
-            if r.status_code >= 400:
-                self.last_error = f"helius rpc {method} {r.status_code}: {r.text[:140]}"
+        for attempt in range(3):
+            try:
+                r = self.s.post(HELIUS_RPC, json={"jsonrpc": "2.0", "id": "1",
+                                "method": method, "params": params}, timeout=12)
+                if r.status_code == 429:
+                    # rate limited — back off, and flag so bulk callers stop early
+                    self.rate_limited = True
+                    if attempt < 2:
+                        time.sleep(0.4 * (attempt + 1))
+                        continue
+                    self.last_error = f"helius rpc {method} 429: rate limited"
+                    return None
+                if r.status_code >= 400:
+                    self.last_error = f"helius rpc {method} {r.status_code}: {r.text[:140]}"
+                    return None
+                return r.json().get("result")
+            except requests.RequestException as e:
+                self.last_error = f"helius rpc {method} error: {e}"
                 return None
-            return r.json().get("result")
-        except requests.RequestException as e:
-            self.last_error = f"helius rpc {method} error: {e}"
-            return None
+        return None
 
     def _helius_api(self, path: str, **params):
         try:
@@ -72,14 +86,21 @@ class HeliusFeed(Feed):
         REST API, which is plan-gated and 401s). getSignaturesForAddress ->
         getTransaction(jsonParsed). Returns a lightweight shape the modules use:
         {timestamp, feePayer, tokenTransfers:[{mint,toUserAccount}]}."""
+        # cap signatures hard — base-tier RPC rate-limits bursts, and we only
+        # need the most recent few per wallet to detect a buy.
+        limit = min(limit, 8)
         sigs = self._rpc("getSignaturesForAddress", [address, {"limit": limit}])
         if not sigs:
             return []
         out = []
         for s in sigs[:limit]:
+            if self.rate_limited or self.rpc_calls >= self.RPC_CALL_BUDGET:
+                break   # stop early rather than hammer a rate-limited endpoint
             sig = s.get("signature")
             if not sig:
                 continue
+            self.rpc_calls += 1
+            time.sleep(self.RPC_CALL_DELAY)
             tx = self._rpc("getTransaction",
                            [sig, {"maxSupportedTransactionVersion": 0,
                                   "encoding": "jsonParsed"}])
