@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PumpScout</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div id="login" class="login">
+  <div class="login-box">
+    <h1>PUMP<span>SCOUT</span></h1>
+    <input type="password" id="pw" placeholder="password" autocomplete="current-password">
+    <button id="login-btn">Enter</button>
+    <p id="login-err" class="err"></p>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <header class="topbar">
+    <div class="brand">PUMP<span>SCOUT</span></div>
+    <div id="mode-pill" class="pill">DRY RUN</div>
+    <div class="stat"><label>LAST SCOUT</label><b id="last-scout">—</b></div>
+    <div class="stat"><label>EQUITY</label><b id="equity">—</b></div>
+    <div class="stat"><label>OPEN</label><b id="open-n">—</b></div>
+    <div class="stat"><label>REALIZED</label><b id="realized">—</b></div>
+    <div id="dot" class="dot"></div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab on" data-tab="pipeline">Pipeline</button>
+    <button class="tab" data-tab="performance">Performance</button>
+    <button class="tab" data-tab="candidates">Candidates</button>
+    <button class="tab" data-tab="positions">Positions</button>
+    <button class="tab" data-tab="scribe">Scribe</button>
+    <button class="tab" data-tab="wallets">Wallets</button>
+  </nav>
+
+  <section id="tab-pipeline" class="panel">
+    <div class="modgrid" id="modgrid"></div>
+  </section>
+
+  <section id="tab-performance" class="panel hidden">
+    <div class="statrow" id="perf-stats"></div>
+    <div class="card">
+      <h2>Equity curve</h2>
+      <div id="equity-chart"></div>
+    </div>
+    <div class="perf2col">
+      <div class="card"><h2>Exit reasons</h2><div id="close-reasons"></div></div>
+      <div class="card"><h2>Candidate funnel</h2><div id="funnel"></div></div>
+    </div>
+  </section>
+
+  <section id="tab-candidates" class="panel hidden">
+    <table class="tbl"><thead><tr>
+      <th>Time</th><th>Token</th><th>Bounce</th><th>Whales</th><th>KOLs</th>
+      <th>Holders</th><th>Pressure</th><th>Rug</th><th>Bundles</th><th>Score</th><th>Decision</th>
+    </tr></thead><tbody id="cand-body"></tbody></table>
+  </section>
+
+  <section id="tab-positions" class="panel hidden">
+    <table class="tbl"><thead><tr>
+      <th>Opened</th><th>Token</th><th>Size</th><th>Entry</th><th>Last</th>
+      <th>Peak</th><th>TP</th><th>P&L</th><th>Status</th>
+    </tr></thead><tbody id="pos-body"></tbody></table>
+  </section>
+
+  <section id="tab-scribe" class="panel hidden">
+    <div id="scribe-list" class="scribe"></div>
+  </section>
+
+  <section id="tab-wallets" class="panel hidden">
+    <p class="hint">Paste wallets to watch — one per line as <code>address,label,kind</code> (kind = whale / fund / smart / kol). These feed WHALE WATCH and KOL WATCH.</p>
+    <textarea id="wallet-input" rows="8" placeholder="7xKX...abc,AlphaFund,fund&#10;9pQm...def,CryptoKOL,kol"></textarea>
+    <button id="wallet-save">Import wallets</button>
+    <span id="wallet-note" class="hint"></span>
+    <div id="wallet-list" class="scribe"></div>
+  </section>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
