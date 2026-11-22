@@ -26,9 +26,20 @@ def _extract_key(raw: str) -> str:
 HELIUS_KEY = _extract_key(os.environ.get("HELIUS_API_KEY", ""))
 ST_KEY = (os.environ.get("SOLANATRACKER_API_KEY", "") or "").strip()
 
+def _st_base() -> str:
+    """SolanaTracker base URL. Default is the shared public host; a dedicated/
+    private endpoint (e.g. https://velvet-salmon-5178.secure.data.solanatracker.io)
+    is set via SOLANATRACKER_BASE_URL. Trailing slash stripped; scheme added if
+    the user pasted a bare host."""
+    raw = (os.environ.get("SOLANATRACKER_BASE_URL", "") or "").strip().rstrip("/")
+    if not raw:
+        return "https://data.solanatracker.io"
+    if not raw.startswith("http"):
+        raw = "https://" + raw
+    return raw
+
 HELIUS_RPC = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_KEY}"
 HELIUS_API = "https://api.helius.xyz/v0"
-ST_API = "https://data.solanatracker.io"
 PUMPFUN_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"  # pump.fun program id
 
 SOL_USD_FALLBACK = 150.0  # used only if price lookup fails
@@ -131,11 +142,14 @@ class HeliusFeed(Feed):
         return out
 
     def _st(self, path: str, **params):
-        if not ST_KEY:
-            return None
+        if not ST_KEY and "solanatracker.io" in _st_base() and "secure" not in _st_base():
+            return None   # public host needs a key; a dedicated host may auth by URL
         try:
-            r = self.s.get(f"{ST_API}{path}", params=params,
-                           headers={"x-api-key": ST_KEY}, timeout=12)
+            headers = {}
+            if ST_KEY:
+                headers["x-api-key"] = ST_KEY   # harmless on URL-authed dedicated hosts
+            r = self.s.get(f"{_st_base()}{path}", params=params,
+                           headers=headers, timeout=12)
             if r.status_code >= 400:
                 self.last_error = f"solanatracker {path} {r.status_code}: {r.text[:140]}"
                 return None
